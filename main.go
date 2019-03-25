@@ -30,7 +30,7 @@ func main() {
 	flag.Parse()
 
 	if *bucket == "" || *dir == "" || (*compression != "" && *compression != "gzip" && *compression != "br") {
-		fmt.Printf("Usage: %s -b BUCKET_NAME -d DIRECTORY_TO_SYNC [-c gzip|br]\n", os.Args[0])
+		fmt.Printf("Usage: %s -b BUCKET_NAME -r REGION -d DIRECTORY_TO_SYNC [-c gzip|br] [-s]\n", os.Args[0])
 		os.Exit(1)
 	}
 
