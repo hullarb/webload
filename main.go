@@ -7,9 +7,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
-
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/aws/aws-sdk-go/service/s3"
 
@@ -25,26 +25,30 @@ func main() {
 	bucket := flag.String("b", "", "name of the bucket to upload")
 	region := flag.String("r", "", "aws region")
 	dir := flag.String("d", "", "path of the directory which contains the files to upload")
-	sync := flag.Bool("s", false, "synchronize directory, all the files taht are only present in the S3 bucket will be removed")
+	syn := flag.Bool("s", false, "synchronize directory, all the files taht are only present in the S3 bucket will be removed")
 	compression := flag.String("c", "", "compress the files, possible values gzip or br, default: no compression")
+	n := flag.Int("n", 16, "number of parallel uploads")
 	flag.Parse()
 
 	if *bucket == "" || *dir == "" || (*compression != "" && *compression != "gzip" && *compression != "br") {
-		fmt.Printf("Usage: %s -b BUCKET_NAME -r REGION -d DIRECTORY_TO_SYNC [-c gzip|br] [-s]\n", os.Args[0])
+		fmt.Printf("Usage: %s -b BUCKET_NAME -r REGION -d DIRECTORY_TO_SYNC [-n num_parallel_uploads] [-c gzip|br] [-s]\n", os.Args[0])
 		os.Exit(1)
 	}
 
-	var files []string
-	err := filepath.Walk(*dir, func(path string, info os.FileInfo, err error) error {
-		if !info.IsDir() {
-			files = append(files, path)
+	files := make(chan string)
+	go func() {
+		err := filepath.Walk(*dir, func(path string, info os.FileInfo, err error) error {
+			if !info.IsDir() {
+				files <- path
+			}
+			return nil
+		})
+		close(files)
+		if err != nil {
+			fmt.Printf("Failed to list the content of %s: %v\n", *dir, err)
+			os.Exit(1)
 		}
-		return nil
-	})
-	if err != nil {
-		fmt.Printf("Failed to list the content of %s: %v\n", *dir, err)
-		os.Exit(1)
-	}
+	}()
 
 	sess, err := session.NewSession(&aws.Config{Region: region})
 	if err != nil {
@@ -54,40 +58,51 @@ func main() {
 
 	uploader := s3manager.NewUploader(sess)
 	uploaded := map[string]struct{}{}
-	for _, file := range files {
-		var b io.Reader
-		var err error
-		b, err = os.Open(file)
-		if err != nil {
-			fmt.Printf("failed to open: %s: %v\n", file, err)
-			os.Exit(1)
-		}
-		b, err = maybeCompress(b, *compression)
-		if err != nil {
-			fmt.Printf("failed to compress: %s: %v\n", file, err)
-			os.Exit(1)
-		}
-		ext := filepath.Ext(file)
-		key, err := filepath.Rel(*dir, file)
-		if err != nil {
-			panic(err)
-		}
-		_, err = uploader.Upload(&s3manager.UploadInput{
-			ACL:             &publicReadACL,
-			Body:            b,
-			ContentType:     mimeTypes[ext],
-			ContentEncoding: compression,
-			Bucket:          bucket,
-			Key:             &key,
-		})
-		if err != nil {
-			fmt.Printf("failed to upload: %s: %v\n", file, err)
-			os.Exit(1)
-		}
-		uploaded[key] = struct{}{}
-		fmt.Printf("%s was uploaded\n", file)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for i := 0; i < *n; i++ {
+		go func() {
+			wg.Add(1)
+			defer wg.Done()
+			for file := range files {
+				var b io.Reader
+				var err error
+				b, err = os.Open(file)
+				if err != nil {
+					fmt.Printf("failed to open: %s: %v\n", file, err)
+					os.Exit(1)
+				}
+				b, err = maybeCompress(b, *compression)
+				if err != nil {
+					fmt.Printf("failed to compress: %s: %v\n", file, err)
+					os.Exit(1)
+				}
+				ext := filepath.Ext(file)
+				key, err := filepath.Rel(*dir, file)
+				if err != nil {
+					panic(err)
+				}
+				_, err = uploader.Upload(&s3manager.UploadInput{
+					ACL:             &publicReadACL,
+					Body:            b,
+					ContentType:     mimeTypes[ext],
+					ContentEncoding: compression,
+					Bucket:          bucket,
+					Key:             &key,
+				})
+				if err != nil {
+					fmt.Printf("failed to upload: %s: %v\n", file, err)
+					os.Exit(1)
+				}
+				mu.Lock()
+				uploaded[key] = struct{}{}
+				mu.Unlock()
+				fmt.Printf("%s was uploaded\n", file)
+			}
+		}()
 	}
-	if *sync {
+	wg.Wait()
+	if *syn {
 		fmt.Println("syncing...")
 		svc := s3.New(sess)
 		var ct *string
