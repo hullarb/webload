@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
@@ -37,8 +38,8 @@ func main() {
 
 	files := make(chan string)
 	go func() {
-		err := filepath.Walk(*dir, func(path string, info os.FileInfo, err error) error {
-			if !info.IsDir() {
+		err := filepath.WalkDir(*dir, func(path string, d fs.DirEntry, err error) error {
+			if !d.IsDir() {
 				files <- path
 			}
 			return nil
@@ -61,8 +62,8 @@ func main() {
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for i := 0; i < *n; i++ {
+		wg.Add(1)
 		go func() {
-			wg.Add(1)
 			defer wg.Done()
 			for file := range files {
 				var b io.Reader

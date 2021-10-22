@@ -1,8 +1,9 @@
 module github.com/hullarb/webload
 
-go 1.12
+go 1.17
 
 require (
 	github.com/aws/aws-sdk-go v1.16.32
-	github.com/jmespath/go-jmespath v0.0.0-20180206201540-c2b33e8439af
+	github.com/stretchr/testify v1.7.0 // indirect
+	golang.org/x/net v0.0.0-20211020060615-d418f374d309 // indirect
 )
